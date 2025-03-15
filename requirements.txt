@@ -1,0 +1,16 @@
+streamlit
+dotenv
+langchain
+langchain-community
+langgraph
+openai
+langchain_openai
+wikipedia
+pypdf2
+pandas
+python-docx
+streamlit
+python-docx
+langchain_core
+langchain_openai
+python-dotenv
