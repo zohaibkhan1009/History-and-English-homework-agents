@@ -1,0 +1,119 @@
+import os
+import streamlit as st
+import datetime
+from dotenv import load_dotenv
+from langchain_community.tools import WikipediaQueryRun
+from langchain_community.utilities import WikipediaAPIWrapper
+from langchain_openai import ChatOpenAI
+from langgraph.prebuilt import create_react_agent
+from langchain_core.messages import HumanMessage
+import PyPDF2
+import pandas as pd
+from docx import Document
+
+# Load environment variables
+load_dotenv()
+API_KEY = os.getenv("OPENAI_API_KEY")
+
+# Wikipedia API for external knowledge
+api_wrapper = WikipediaAPIWrapper(top_k_results=1, doc_content_chars_max=300)
+wikipedia_tool = WikipediaQueryRun(api_wrapper=api_wrapper)
+
+# Agent 1: History Expert
+history_llm = ChatOpenAI(temperature=0, api_key=API_KEY, model="gpt-4o-mini")
+history_tools = [wikipedia_tool]
+history_agent = create_react_agent(history_llm, history_tools)
+
+# Agent 2: English Expert
+english_llm = ChatOpenAI(temperature=0, api_key=API_KEY, model="gpt-4o-mini")
+english_tools = [wikipedia_tool]
+english_agent = create_react_agent(english_llm, english_tools)
+
+# Streamlit UI Setup
+st.set_page_config(page_title="Chat with Expert", layout="wide")
+
+# Sidebar Navigation
+st.sidebar.subheader("Select an Expert")
+agent_choice = st.sidebar.radio("Choose an Expert:", ["History Expert", "English Expert"])
+
+# File Upload
+st.sidebar.subheader("Upload a File")
+uploaded_file = st.sidebar.file_uploader("Upload PDF, DOCX, TXT, CSV", type=["pdf", "docx", "txt", "csv"])
+
+# Extract text from the uploaded file
+def extract_text_from_file(uploaded_file):
+    if uploaded_file.type == "application/pdf":
+        pdf_reader = PyPDF2.PdfReader(uploaded_file)
+        text = "\n".join([page.extract_text() for page in pdf_reader.pages if page.extract_text()])
+    elif uploaded_file.type == "text/plain":
+        text = uploaded_file.read().decode("utf-8")
+    elif uploaded_file.type == "application/vnd.openxmlformats-officedocument.wordprocessingml.document":
+        doc = Document(uploaded_file)
+        text = "\n".join([para.text for para in doc.paragraphs])
+    elif uploaded_file.type == "text/csv":
+        df = pd.read_csv(uploaded_file)
+        text = df.to_string()
+    else:
+        text = "Unsupported file format."
+    return text
+
+# Store document content in session state
+if "document_text" not in st.session_state:
+    st.session_state.document_text = ""
+
+if uploaded_file:
+    extracted_text = extract_text_from_file(uploaded_file)
+    if extracted_text != "Unsupported file format.":
+        st.session_state.document_text = extracted_text
+        st.sidebar.success("File uploaded and processed successfully!")
+    else:
+        st.sidebar.error("Could not process the uploaded file.")
+
+# Chat History
+if "chat_history" not in st.session_state:
+    st.session_state.chat_history = []
+
+st.title("💬 Chat with Expert")
+st.subheader(f"Chat with the {agent_choice}")
+user_input = st.text_input("Ask a question:")
+
+if user_input:
+    st.session_state.chat_history.append(("user", user_input))
+    st.write("Thinking...")
+    
+    if st.session_state.document_text:
+        doc_prompt = f"Based on this document, answer the question: {user_input}\n\nDocument:\n{st.session_state.document_text[:2000]}"
+        if agent_choice == "History Expert":
+            response = history_agent.invoke({"messages": [HumanMessage(content=doc_prompt)]})
+        else:
+            response = english_agent.invoke({"messages": [HumanMessage(content=doc_prompt)]})
+        reply = response["messages"][-1].content
+    else:
+        if agent_choice == "History Expert":
+            response = history_agent.invoke({"messages": [HumanMessage(content=user_input)]})
+        else:
+            response = english_agent.invoke({"messages": [HumanMessage(content=user_input)]})
+        reply = response["messages"][-1].content
+    
+    st.session_state.chat_history.append(("bot", reply))
+
+# Display Chat History
+for sender, message in st.session_state.chat_history:
+    if sender == "user":
+        st.markdown(f"<div style='text-align: right; background-color: #4CAF50; color: white; padding: 10px; border-radius: 10px; margin: 5px 0;'>{message}</div>", unsafe_allow_html=True)
+    else:
+        st.markdown(f"<div style='text-align: left; background-color: #f1f1f1; color: black; padding: 10px; border-radius: 10px; margin: 5px 0;'>{message}</div>", unsafe_allow_html=True)
+
+# Kill Session Button with Logging
+def kill_session():
+    session_end_time = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    log_message = f"Session ended at {session_end_time}\nTotal messages exchanged: {len(st.session_state.chat_history)}"
+    with open("session_log.txt", "a") as log_file:
+        log_file.write(log_message + "\n")
+    
+    st.session_state.chat_history = []
+    st.session_state.document_text = ""
+    st.sidebar.success("Session ended. API usage stopped.")
+    st.stop()
+
+st.sidebar.button("End Session", on_click=kill_session)
